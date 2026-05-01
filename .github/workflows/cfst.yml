@@ -1,0 +1,84 @@
+name: Generate Cloudflare Best IPs
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions 使用 UTC 时间；这里表示每 6 小时运行一次。
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cfst-generate
+  cancel-in-progress: true
+
+env:
+  CFST_VERSION: v2.3.5
+  CFST_PORT: '443'
+  CFST_TOP: '20'
+  CFST_TLS: 'true'
+  CFST_TL: '200'
+  CFST_DN: '10'
+  CFST_MIN_SPEED: '0'
+
+jobs:
+  generate:
+    name: Generate ADD.txt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download CloudflareSpeedTest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools output
+          url="https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_amd64.tar.gz"
+          curl -L --retry 3 --connect-timeout 20 -o /tmp/cfst.tar.gz "$url"
+          tar -xzf /tmp/cfst.tar.gz -C tools
+          chmod +x tools/CloudflareST
+
+      - name: Run CloudflareSpeedTest
+        shell: bash
+        run: |
+          set -euo pipefail
+          tls_arg=""
+          if [[ "${CFST_TLS}" == "true" ]]; then
+            tls_arg="-tls"
+          fi
+          ./tools/CloudflareST \
+            -p "${CFST_PORT}" \
+            ${tls_arg} \
+            -tl "${CFST_TL}" \
+            -dn "${CFST_DN}" \
+            -sl "${CFST_MIN_SPEED}" \
+            -o output/result.csv
+
+      - name: Build ADD.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/cfst_to_add.py \
+            --input output/result.csv \
+            --output output/ADD.txt \
+            --port "${CFST_PORT}" \
+            --top "${CFST_TOP}"
+          echo '===== output/ADD.txt ====='
+          cat output/ADD.txt
+
+      - name: Commit output
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add output/result.csv output/ADD.txt
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+          else
+            git commit -m 'chore: update Cloudflare best IPs [skip ci]'
+            git push
+          fi
