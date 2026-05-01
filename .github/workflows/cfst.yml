@@ -45,6 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           ./tools/cfst \
+            -f "tools/ip.txt" \
             -tp "${CFST_PORT}" \
             -tl "${CFST_TL}" \
             -dn "${CFST_DN}" \
