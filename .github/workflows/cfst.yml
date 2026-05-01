@@ -17,9 +17,8 @@ env:
   CFST_VERSION: v2.3.5
   CFST_PORT: '443'
   CFST_TOP: '20'
-  CFST_TLS: 'true'
   CFST_TL: '200'
-  CFST_DN: '10'
+  CFST_DN: '20'
   CFST_MIN_SPEED: '0'
 
 jobs:
@@ -45,16 +44,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tls_arg=""
-          if [[ "${CFST_TLS}" == "true" ]]; then
-            tls_arg="-tls"
-          fi
           ./tools/cfst \
-            -p "${CFST_PORT}" \
-            ${tls_arg} \
+            -tp "${CFST_PORT}" \
             -tl "${CFST_TL}" \
             -dn "${CFST_DN}" \
             -sl "${CFST_MIN_SPEED}" \
+            -p "${CFST_TOP}" \
             -o output/result.csv
 
       - name: Build ADD.txt
@@ -82,4 +77,5 @@ jobs:
             git commit -m 'chore: update Cloudflare best IPs [skip ci]'
             git push
           fi
+
 
