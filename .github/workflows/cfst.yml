@@ -39,7 +39,7 @@ jobs:
           url="https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_amd64.tar.gz"
           curl -L --retry 3 --connect-timeout 20 -o /tmp/cfst.tar.gz "$url"
           tar -xzf /tmp/cfst.tar.gz -C tools
-          chmod +x tools/CloudflareST
+          chmod +x tools/cfst
 
       - name: Run CloudflareSpeedTest
         shell: bash
@@ -49,7 +49,7 @@ jobs:
           if [[ "${CFST_TLS}" == "true" ]]; then
             tls_arg="-tls"
           fi
-          ./tools/CloudflareST \
+          ./tools/cfst \
             -p "${CFST_PORT}" \
             ${tls_arg} \
             -tl "${CFST_TL}" \
@@ -82,3 +82,4 @@ jobs:
             git commit -m 'chore: update Cloudflare best IPs [skip ci]'
             git push
           fi
+
