@@ -16,10 +16,11 @@ concurrency:
 env:
   CFST_VERSION: v2.3.5
   CFST_PORT: '443'
-  CFST_TOP: '20'
+  CFST_TOP: '100'
   CFST_TL: '200'
-  CFST_DN: '20'
+  CFST_DN: '100'
   CFST_MIN_SPEED: '0'
+  CFST_URL: 'https://speed.cloudflare.com/__down?bytes=50000000'
 
 jobs:
   generate:
@@ -47,6 +48,7 @@ jobs:
           ./tools/cfst \
             -f "tools/ip.txt" \
             -tp "${CFST_PORT}" \
+            -url "${CFST_URL}" \
             -tl "${CFST_TL}" \
             -dn "${CFST_DN}" \
             -sl "${CFST_MIN_SPEED}" \
