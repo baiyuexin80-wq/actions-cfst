@@ -1,4 +1,4 @@
-name: Generate Cloudflare Best IPs
+name: Collect Best IPs From Subscription Sources
 
 on:
   workflow_dispatch:
@@ -14,14 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CFST_VERSION: v2.3.5
-  CFST_PORT: '443'
-  CFST_TOP: '60'
-  CFST_TL: '500'
-  CFST_DN: '12'
-  CFST_MIN_SPEED: '0.01'
-  CFST_URL: 'https://speed.cloudflare.com/__down?bytes=50000000'
-  CFST_TARGET_COLOS: 'HKG,NRT,TPE,SIN,KIX,ICN,LAX,SJC,SEA,DFW,ORD'
+  BEST_SUB_SOURCES: 'Cm.Soso.Edu.Kg,Sub.Cmliussss.Net,Owo.O00o.Ooo'
+  BEST_SUB_TOP: '120'
 
 jobs:
   generate:
@@ -32,49 +26,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download CloudflareSpeedTest
+      - name: Collect IPs from subscription sources
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p tools output
-          url="https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_amd64.tar.gz"
-          curl -L --retry 3 --connect-timeout 20 -o /tmp/cfst.tar.gz "$url"
-          tar -xzf /tmp/cfst.tar.gz -C tools
-          chmod +x tools/cfst
-
-      - name: Run CloudflareSpeedTest by colo
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p output/raw
-          IFS=',' read -ra COLOS <<< "${CFST_TARGET_COLOS}"
-          for colo in "${COLOS[@]}"; do
-            colo="$(echo "${colo}" | xargs)"
-            echo "===== scan ${colo} ====="
-            ./tools/cfst \
-              -f "tools/ip.txt" \
-              -tp "${CFST_PORT}" \
-              -url "${CFST_URL}" \
-              -httping \
-              -cfcolo "${colo}" \
-              -tl "${CFST_TL}" \
-              -dn "${CFST_DN}" \
-              -sl "${CFST_MIN_SPEED}" \
-              -p "${CFST_DN}" \
-              -o "output/raw/${colo}.csv" || true
-          done
-          ls -lah output/raw || true
+          mkdir -p output
+          python3 scripts/cfst_to_add.py \
+            --sources "${BEST_SUB_SOURCES}" \
+            --output output/ADD.txt \
+            --merged-output output/result.csv \
+            --top "${BEST_SUB_TOP}"
 
       - name: Build ADD.txt
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/cfst_to_add.py \
-            --input output/raw \
-            --output output/ADD.txt \
-            --merged-output output/result.csv \
-            --port "${CFST_PORT}" \
-            --top "${CFST_TOP}"
+          wc -l output/ADD.txt || true
           echo '===== output/ADD.txt ====='
           cat output/ADD.txt
 

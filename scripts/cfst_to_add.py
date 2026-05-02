@@ -1,188 +1,237 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把 CloudflareSpeedTest 的结果目录合并后转成本项目可用的 ADD.txt。"""
+"""从多个优选订阅源收集 IP，去重清洗后生成 ADD.txt / result.csv。"""
 
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
-import json
+import re
+import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 
-LOCATIONS_URL = "https://speed.cloudflare.com/locations"
+USER_AGENT = "v2rayN/edgetunnel (https://github.com/cmliu/edgetunnel)"
+UUID_MARK = "00000000-0000-4000-8000-000000000000"
+HOST_MARK = "example.com"
 
 
-def pick(row: dict[str, str], candidates: list[str]) -> str:
-    for key in candidates:
-        if key in row and row[key].strip():
-            return row[key].strip()
-    return ""
+NOISE_PATTERNS = [
+    r"(?i)t\.me/[^\s]+",
+    r"(?i)telegram",
+    r"(?i)官方群组",
+    r"(?i)官方频道",
+    r"(?i)官方更新",
+    r"(?i)官方发布",
+    r"(?i)订阅免费谨防受骗",
+    r"(?i)免费共享",
+    r"(?i)加入我的频道",
+    r"(?i)解锁更多优选节点",
+    r"(?i)天诚",
+    r"(?i)🐲|™️|🌐",
+    r"(?i)群组@[\w_]+",
+]
 
 
-def to_float(value: str, default: float = 0.0) -> float:
-    try:
-        return float(value.strip().replace("%", ""))
-    except Exception:
-        return default
-
-
-def normalize_speed(speed: str) -> str:
-    speed = speed.strip()
-    if not speed:
-        return ""
-    try:
-        value = float(speed)
-        return f"{value:g}"
-    except Exception:
-        return speed.replace("MB/s", "").strip()
-
-
-def load_locations() -> dict[str, dict[str, str]]:
-    try:
-        with urllib.request.urlopen(LOCATIONS_URL, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        mapping: dict[str, dict[str, str]] = {}
-        for item in data:
-            iata = str(item.get("iata", "")).strip().upper()
-            if not iata:
-                continue
-            mapping[iata] = {
-                "city": str(item.get("city", "")).strip(),
-                "cca2": str(item.get("cca2", "")).strip().upper(),
-                "region": str(item.get("region", "")).strip(),
-            }
-        return mapping
-    except Exception:
-        return {}
-
-
-COUNTRY_MAP = {
+COUNTRY_HINTS = {
+    "HKG": "香港",
     "HK": "香港",
-    "TW": "台湾",
+    "NRT": "日本",
+    "KIX": "日本",
     "JP": "日本",
-    "KR": "韩国",
+    "TPE": "台湾",
+    "TW": "台湾",
+    "SIN": "新加坡",
     "SG": "新加坡",
-    "TH": "泰国",
-    "MY": "马来西亚",
-    "PH": "菲律宾",
-    "ID": "印度尼西亚",
-    "VN": "越南",
-    "IN": "印度",
-    "AU": "澳大利亚",
-    "NZ": "新西兰",
+    "ICN": "韩国",
+    "KR": "韩国",
+    "LAX": "美国",
+    "SJC": "美国",
+    "SEA": "美国",
+    "DFW": "美国",
+    "ORD": "美国",
+    "IAD": "美国",
+    "JFK": "美国",
+    "EWR": "美国",
+    "ATL": "美国",
+    "MIA": "美国",
     "US": "美国",
-    "CA": "加拿大",
-    "MX": "墨西哥",
-    "BR": "巴西",
-    "CL": "智利",
+    "FI": "芬兰",
+    "DE": "德国",
+    "TR": "土耳其",
+    "UK": "英国",
     "GB": "英国",
     "FR": "法国",
-    "DE": "德国",
     "NL": "荷兰",
-    "ES": "西班牙",
-    "IT": "意大利",
-    "CH": "瑞士",
-    "AT": "奥地利",
-    "SE": "瑞典",
-    "DK": "丹麦",
-    "PL": "波兰",
-    "CZ": "捷克",
-    "TR": "土耳其",
-    "AE": "阿联酋",
-    "QA": "卡塔尔",
-    "ZA": "南非",
+    "CA": "加拿大",
+    "AU": "澳大利亚",
 }
 
 
-def build_remark(colo: str, speed: str, locations: dict[str, dict[str, str]]) -> str:
-    colo = colo.strip().upper()
-    speed_text = normalize_speed(speed)
-    if colo and colo != "N/A" and colo in locations:
-        item = locations[colo]
-        country = COUNTRY_MAP.get(item.get("cca2", ""), item.get("cca2", ""))
-        city = item.get("city", "")
-        location = country or colo
-        if city:
-            location = f"{location}-{city}"
-    else:
-        location = colo or "CF优选"
-    return f"{location}{speed_text}MB/s" if speed_text else location
+def fetch_text(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 
-def iter_csv_files(input_path: Path) -> list[Path]:
-    if input_path.is_dir():
-        return sorted(p for p in input_path.glob("*.csv") if p.is_file())
-    return [input_path]
+def decode_subscription(text: str) -> str:
+    clean = "".join(text.split())
+    if not clean:
+        return ""
+    try:
+        return base64.b64decode(clean + "=" * (-len(clean) % 4)).decode("utf-8", errors="replace")
+    except Exception:
+        return text
+
+
+def source_url(host: str) -> str:
+    host = host.strip()
+    if not host:
+        raise ValueError("空订阅源")
+    if not re.match(r"^https?://", host, re.I):
+        host = "https://" + host
+    host = host.rstrip("/")
+    return f"{host}/sub?host=example.com&uuid={UUID_MARK}"
+
+
+def extract_addr_and_remark(line: str) -> tuple[str, str] | None:
+    if UUID_MARK not in line or HOST_MARK not in line:
+        return None
+    m = re.search(r"://[^@]+@([^?]+)", line)
+    if not m:
+        return None
+    addr = m.group(1).strip()
+    remark = ""
+    h = re.search(r"#(.+)$", line)
+    if h:
+        remark = urllib.parse.unquote(h.group(1)).strip()
+    return addr, remark
+
+
+def clean_remark(remark: str) -> str:
+    text = remark.strip()
+    for pattern in NOISE_PATTERNS:
+        text = re.sub(pattern, "", text)
+    text = re.sub(r"\s+", " ", text).strip(" -_|,，。.;；")
+    return text
+
+
+def normalize_location(remark: str) -> str:
+    if not remark:
+        return "优选"
+    upper = remark.upper()
+    for key, value in COUNTRY_HINTS.items():
+        if key in upper:
+            return value
+    # 直接包含中文地区关键字时保留
+    for word in ["香港", "日本", "台湾", "新加坡", "韩国", "美国", "德国", "芬兰", "土耳其", "英国", "法国", "荷兰", "加拿大", "澳大利亚"]:
+        if word in remark:
+            return word
+    return remark[:20] if remark else "优选"
+
+
+def score_remark(remark: str) -> int:
+    score = 0
+    if re.search(r"\d+(\.\d+)?\s*MB/s", remark, re.I):
+        score += 50
+    if any(x in remark for x in ["香港", "日本", "台湾", "新加坡", "韩国", "美国"]):
+        score += 30
+    if re.search(r"\b(HKG|NRT|TPE|SIN|ICN|LAX|SJC|SEA|DFW|ORD|US|JP|HK|SG|KR)\b", remark, re.I):
+        score += 20
+    if "优选" in remark:
+        score += 10
+    return score
+
+
+def build_output_remark(remark: str) -> str:
+    clean = clean_remark(remark)
+    location = normalize_location(clean)
+    speed = ""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*MB/s", clean, re.I)
+    if m:
+        speed = f"{float(m.group(1)):g}MB/s"
+    return f"{location}{speed}" if speed else location
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="result.csv 或结果目录")
+    parser.add_argument("--sources", required=True, help="逗号分隔的订阅源域名")
     parser.add_argument("--output", required=True, help="输出 ADD.txt")
-    parser.add_argument("--merged-output", default="", help="合并后的 result.csv 输出路径")
-    parser.add_argument("--port", default="443", help="节点端口")
-    parser.add_argument("--top", type=int, default=60, help="输出前 N 个")
+    parser.add_argument("--merged-output", required=True, help="输出 result.csv")
+    parser.add_argument("--top", type=int, default=120, help="输出前 N 个")
     args = parser.parse_args()
 
-    input_path = Path(args.input)
     output_path = Path(args.output)
-    merged_output = Path(args.merged_output) if args.merged_output else None
-    if not input_path.exists():
-        raise SystemExit(f"输入不存在: {input_path}")
+    merged_output = Path(args.merged_output)
+    hosts = [x.strip() for x in args.sources.split(",") if x.strip()]
+    if not hosts:
+        raise SystemExit("没有订阅源")
 
-    locations = load_locations()
-    files = iter_csv_files(input_path)
-    if not files:
-        raise SystemExit("没有找到任何 csv 结果文件")
-
-    dedup: dict[str, tuple[float, float, str, dict[str, str]]] = {}
     merged_rows: list[dict[str, str]] = []
-    for file in files:
-        with file.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                ip = pick(row, ["IP 地址", "IP地址", "IP", "ip"])
-                if not ip:
-                    continue
-                delay = pick(row, ["平均延迟", "平均延迟(ms)", "延迟", "延迟(ms)"])
-                speed = pick(row, ["下载速度(MB/s)", "下载速度", "速度(MB/s)"])
-                colo = pick(row, ["地区码", "数据中心", "地区", "colo", "COLO"])
+    dedup: dict[str, dict[str, str | int]] = {}
 
-                speed_val = to_float(speed)
-                delay_val = to_float(delay, 999999)
-                merged_rows.append(row)
+    for host in hosts:
+        url = source_url(host)
+        try:
+            raw = fetch_text(url)
+            decoded = decode_subscription(raw)
+        except urllib.error.URLError as exc:
+            print(f"[WARN] 拉取失败 {host}: {exc}", file=sys.stderr)
+            continue
 
-                # 只保留有效结果：有地区码且速度大于 0
-                if speed_val <= 0 or not colo or colo.upper() == "N/A":
-                    continue
+        for line in decoded.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed = extract_addr_and_remark(line)
+            if not parsed:
+                continue
+            addr, remark = parsed
+            clean = clean_remark(remark)
+            final_remark = build_output_remark(clean)
+            score = score_remark(clean)
+            merged_rows.append(
+                {
+                    "source": host,
+                    "addr": addr,
+                    "raw_remark": remark,
+                    "clean_remark": clean,
+                    "final_remark": final_remark,
+                    "score": str(score),
+                }
+            )
 
-                remark = build_remark(colo, speed, locations)
-                line = f"{ip}:{args.port}#{remark}"
-                old = dedup.get(ip)
-                # 优先速度高，其次延迟低
-                candidate = (speed_val, -delay_val, line, row)
-                if old is None or candidate[:2] > old[:2]:
-                    dedup[ip] = candidate
+            old = dedup.get(addr)
+            candidate = {
+                "source": host,
+                "addr": addr,
+                "raw_remark": remark,
+                "clean_remark": clean,
+                "final_remark": final_remark,
+                "score": score,
+            }
+            if old is None or int(candidate["score"]) > int(old["score"]):
+                dedup[addr] = candidate
 
-    ranked = sorted(dedup.values(), key=lambda x: (x[0], x[1]), reverse=True)
-    lines = [item[2] for item in ranked[: args.top]]
+    ranked = sorted(dedup.values(), key=lambda x: int(x["score"]), reverse=True)
+    lines = [f"{item['addr']}#{item['final_remark']}" for item in ranked[: args.top]]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
-    if merged_output:
-        merged_output.parent.mkdir(parents=True, exist_ok=True)
-        if merged_rows:
-            fieldnames = list(merged_rows[0].keys())
-            with merged_output.open("w", encoding="utf-8-sig", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(merged_rows)
+    merged_output.parent.mkdir(parents=True, exist_ok=True)
+    with merged_output.open("w", encoding="utf-8-sig", newline="") as f:
+        fieldnames = ["source", "addr", "raw_remark", "clean_remark", "final_remark", "score"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(merged_rows)
 
     if not lines:
-        raise SystemExit("没有生成任何有效优选 IP，请检查测速结果或条件。")
+        raise SystemExit("没有生成任何 IP，请检查订阅源")
 
 
 if __name__ == "__main__":
