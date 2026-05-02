@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import json
 import re
 import sys
 import urllib.error
@@ -67,8 +68,50 @@ COUNTRY_HINTS = {
     "GB": "英国",
     "FR": "法国",
     "NL": "荷兰",
+    "TW": "台湾",
     "CA": "加拿大",
     "AU": "澳大利亚",
+}
+
+
+GEOIP_URL = "https://ipwho.is/{ip}"
+IPV4_ONLY_RE = re.compile(r"^(\\d{1,3}(?:\\.\\d{1,3}){3}):(\\d+)$")
+GEOIP_COUNTRY_MAP = {
+    "HK": "香港",
+    "TW": "台湾",
+    "JP": "日本",
+    "KR": "韩国",
+    "SG": "新加坡",
+    "TH": "泰国",
+    "MY": "马来西亚",
+    "PH": "菲律宾",
+    "ID": "印度尼西亚",
+    "VN": "越南",
+    "IN": "印度",
+    "AU": "澳大利亚",
+    "NZ": "新西兰",
+    "US": "美国",
+    "CA": "加拿大",
+    "MX": "墨西哥",
+    "BR": "巴西",
+    "CL": "智利",
+    "GB": "英国",
+    "FR": "法国",
+    "DE": "德国",
+    "NL": "荷兰",
+    "ES": "西班牙",
+    "IT": "意大利",
+    "CH": "瑞士",
+    "AT": "奥地利",
+    "SE": "瑞典",
+    "DK": "丹麦",
+    "PL": "波兰",
+    "CZ": "捷克",
+    "TR": "土耳其",
+    "AE": "阿联酋",
+    "QA": "卡塔尔",
+    "ZA": "南非",
+    "FI": "芬兰",
 }
 
 
@@ -134,6 +177,35 @@ def normalize_location(remark: str) -> str:
     return remark[:20] if remark else "优选"
 
 
+def extract_explicit_country(remark: str) -> str:
+    if not remark:
+        return ""
+    upper = remark.upper()
+    for key, value in COUNTRY_HINTS.items():
+        if key in upper:
+            return value
+    for word in ["香港", "日本", "台湾", "新加坡", "韩国", "美国", "德国", "芬兰", "土耳其", "英国", "法国", "荷兰", "加拿大", "澳大利亚"]:
+        if word in remark:
+            return word
+    return ""
+
+
+def geoip_country(ip: str, cache: dict[str, str]) -> str:
+    if ip in cache:
+        return cache[ip]
+    try:
+        req = urllib.request.Request(GEOIP_URL.format(ip=ip), headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        code = str(data.get("country_code", "")).strip().upper()
+        country = GEOIP_COUNTRY_MAP.get(code, "")
+        cache[ip] = country
+        return country
+    except Exception:
+        cache[ip] = ""
+        return ""
+
+
 def score_remark(remark: str) -> int:
     score = 0
     if re.search(r"\d+(\.\d+)?\s*MB/s", remark, re.I):
@@ -147,9 +219,17 @@ def score_remark(remark: str) -> int:
     return score
 
 
-def build_output_remark(remark: str) -> str:
+def build_output_remark(remark: str, addr: str, geo_cache: dict[str, str]) -> str:
     clean = clean_remark(remark)
-    location = normalize_location(clean)
+    location = extract_explicit_country(clean)
+    if not location:
+        m = IPV4_ONLY_RE.match(addr)
+        if not m:
+            return ""
+        ip = m.group(1)
+        location = geoip_country(ip, geo_cache)
+        if not location:
+            return ""
     speed = ""
     m = re.search(r"(\d+(?:\.\d+)?)\s*MB/s", clean, re.I)
     if m:
@@ -173,6 +253,7 @@ def main() -> None:
 
     merged_rows: list[dict[str, str]] = []
     dedup: dict[str, dict[str, str | int]] = {}
+    geo_cache: dict[str, str] = {}
 
     for host in hosts:
         url = source_url(host)
@@ -192,7 +273,9 @@ def main() -> None:
                 continue
             addr, remark = parsed
             clean = clean_remark(remark)
-            final_remark = build_output_remark(clean)
+            final_remark = build_output_remark(clean, addr, geo_cache)
+            if not final_remark:
+                continue
             score = score_remark(clean)
             merged_rows.append(
                 {
