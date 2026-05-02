@@ -16,11 +16,12 @@ concurrency:
 env:
   CFST_VERSION: v2.3.5
   CFST_PORT: '443'
-  CFST_TOP: '100'
-  CFST_TL: '200'
-  CFST_DN: '100'
-  CFST_MIN_SPEED: '0'
+  CFST_TOP: '60'
+  CFST_TL: '500'
+  CFST_DN: '12'
+  CFST_MIN_SPEED: '0.01'
   CFST_URL: 'https://speed.cloudflare.com/__down?bytes=50000000'
+  CFST_TARGET_COLOS: 'HKG,NRT,TPE,SIN,KIX,ICN,LAX,SJC,SEA,DFW,ORD'
 
 jobs:
   generate:
@@ -41,27 +42,37 @@ jobs:
           tar -xzf /tmp/cfst.tar.gz -C tools
           chmod +x tools/cfst
 
-      - name: Run CloudflareSpeedTest
+      - name: Run CloudflareSpeedTest by colo
         shell: bash
         run: |
           set -euo pipefail
-          ./tools/cfst \
-            -f "tools/ip.txt" \
-            -tp "${CFST_PORT}" \
-            -url "${CFST_URL}" \
-            -tl "${CFST_TL}" \
-            -dn "${CFST_DN}" \
-            -sl "${CFST_MIN_SPEED}" \
-            -p "${CFST_TOP}" \
-            -o output/result.csv
+          mkdir -p output/raw
+          IFS=',' read -ra COLOS <<< "${CFST_TARGET_COLOS}"
+          for colo in "${COLOS[@]}"; do
+            colo="$(echo "${colo}" | xargs)"
+            echo "===== scan ${colo} ====="
+            ./tools/cfst \
+              -f "tools/ip.txt" \
+              -tp "${CFST_PORT}" \
+              -url "${CFST_URL}" \
+              -httping \
+              -cfcolo "${colo}" \
+              -tl "${CFST_TL}" \
+              -dn "${CFST_DN}" \
+              -sl "${CFST_MIN_SPEED}" \
+              -p "${CFST_DN}" \
+              -o "output/raw/${colo}.csv" || true
+          done
+          ls -lah output/raw || true
 
       - name: Build ADD.txt
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/cfst_to_add.py \
-            --input output/result.csv \
+            --input output/raw \
             --output output/ADD.txt \
+            --merged-output output/result.csv \
             --port "${CFST_PORT}" \
             --top "${CFST_TOP}"
           echo '===== output/ADD.txt ====='
